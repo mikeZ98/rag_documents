@@ -1,0 +1,25 @@
+# Virtualenv / caches (all pinned inside the project by .envrc)
+.venv/
+.cache/
+.direnv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets
+.env
+!.env.example
+
+# Data & artefacts
+qdrant_storage/
+documents/*.pdf
+!documents/sample_*.pdf
+eval/results/
+*.log
+
+# OS
+.DS_Store

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG Showcase — Document Assistant</title>
+  <meta name="description" content="Grounded answers over your PDF corpus, streamed token by token." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📑</text></svg>" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">📑</span>
+      <div>
+        <h1>Document Assistant</h1>
+        <p class="tagline">Two-stage retrieval · cross-encoder reranking · streamed answers</p>
+      </div>
+    </div>
+    <div class="status" id="status" aria-live="polite">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">checking…</span>
+    </div>
+  </header>
+
+  <main id="thread" class="thread" aria-live="polite">
+    <section class="empty" id="empty-state">
+      <h2>Ask anything about the indexed documents</h2>
+      <p>
+        Every answer is grounded in retrieved passages and cites them by number.
+        If the corpus does not contain the answer, the assistant says so instead
+        of guessing.
+      </p>
+      <div class="suggestions" id="suggestions">
+        <button type="button" data-q="How much notice is needed to terminate the agreement?">Notice period for termination?</button>
+        <button type="button" data-q="Within how many days must invoices be paid?">Payment terms?</button>
+        <button type="button" data-q="What is the uptime commitment in the service level agreement?">SLA uptime commitment?</button>
+      </div>
+    </section>
+  </main>
+
+  <form class="composer" id="composer" autocomplete="off">
+    <div class="composer-inner">
+      <textarea
+        id="query"
+        name="query"
+        rows="1"
+        maxlength="500"
+        minlength="3"
+        required
+        placeholder="Ask a question about your documents…  (Enter to send, Shift+Enter for a new line)"
+        aria-label="Your question"
+      ></textarea>
+      <div class="composer-actions">
+        <label class="k-select">
+          <span>passages</span>
+          <select id="k" aria-label="Number of passages to retrieve">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="5">5</option>
+            <option value="8">8</option>
+          </select>
+        </label>
+        <button type="submit" id="send" class="send">
+          <span class="send-label">Send</span>
+          <span class="send-icon" aria-hidden="true">↵</span>
+        </button>
+        <button type="button" id="stop" class="stop" hidden>Stop</button>
+      </div>
+    </div>
+    <p class="counter"><span id="counter">0</span>/500</p>
+  </form>
+
+  <!-- Lightweight markdown rendering; no build step, no npm. -->
+  <script
+    src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+    integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+    crossorigin="anonymous"
+  ></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
