@@ -13,7 +13,7 @@ the project directory.
 ```
 FastAPI (async)  ·  Qdrant 1.19  ·  all-MiniLM-L6-v2  ·  BAAI/bge-reranker-base
 Ollama llama3.1:8b  or  gpt-4o-mini (SSE)  ·  vanilla-JS chat UI  ·  Langfuse v4
-Ragas  ·  uv  ·  mypy --strict  ·  95 tests
+Ragas  ·  uv  ·  mypy --strict  ·  107 tests
 ```
 
 ---
@@ -547,7 +547,7 @@ experiment: run once with `RERANK_TOP_N=3` and once with the reranker bypassed
 ## 8. Tests and quality gates
 
 ```bash
-uv run pytest -q                       # 95 tests, no network, no models, no Qdrant
+uv run pytest -q                       # 107 tests, no network, no models, no Qdrant
 uv run pytest --cov=src --cov-report=term-missing
 uv run mypy                            # strict, including tests and eval
 uv run ruff check . && uv run ruff format --check .

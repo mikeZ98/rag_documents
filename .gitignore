@@ -21,5 +21,9 @@ documents/*.pdf
 eval/results/
 *.log
 
+# Private notes — interview prep, never part of the published project.
+INTERVIEW_PLAYBOOK.md
+INTERVIEW_PLAYBOOK.pdf
+
 # OS
 .DS_Store
