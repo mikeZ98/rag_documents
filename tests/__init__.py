@@ -1,1 +1,1 @@
-"""Test suite for rag-showcase."""
+"""Test suite for rag_documents."""
