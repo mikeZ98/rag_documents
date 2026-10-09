@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     )
 
     # ----------------------------- Service --------------------------------- #
-    app_name: str = "rag-showcase"
+    app_name: str = "rag_documents"
     environment: Literal["local", "dev", "staging", "prod"] = "local"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     api_host: str = "0.0.0.0"
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # ------------------------------ Qdrant --------------------------------- #
     qdrant_host: str = "localhost"
     qdrant_port: int = Field(default=6333, ge=1, le=65535)
-    qdrant_collection: str = "rag_showcase"
+    qdrant_collection: str = "rag_documents"
     qdrant_api_key: SecretStr | None = None
     qdrant_timeout_seconds: float = Field(default=10.0, gt=0)
 

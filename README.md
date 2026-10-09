@@ -1,4 +1,4 @@
-# rag-showcase — asynchronous RAG microservice
+# rag_documents — asynchronous RAG microservice
 
 A production-shaped Retrieval-Augmented Generation service: **two-stage retrieval**
 (dense recall in Qdrant → cross-encoder reranking), **token-level SSE streaming**,
@@ -293,7 +293,7 @@ uv run python -m src.ingest --recreate     # or: uv run rag-ingest --recreate
 ┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┓
 ┃ Metric                 ┃               Value ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━┩
-│ collection             │        rag_showcase │
+│ collection             │        rag_documents │
 │ mode                   │           recreated │
 │ vector size / distance │        384 / cosine │
 │ points upserted        │                  18 │

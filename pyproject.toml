@@ -1,5 +1,5 @@
 [project]
-name = "rag-showcase"
+name = "rag_documents"
 version = "1.0.0"
 description = "Production-grade asynchronous RAG microservice: Qdrant dense retrieval + cross-encoder reranking, SSE streaming, Langfuse tracing and Ragas evaluation."
 readme = "README.md"
