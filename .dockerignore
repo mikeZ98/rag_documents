@@ -1,0 +1,11 @@
+# Allow-list: the build context is only what the image needs. Secrets (.env),
+# caches (.cache/ holds GBs of weights), the index (qdrant_storage/), private
+# notes and git metadata can never leak into a layer. To ship a new file, add
+# it here explicitly.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+**/__pycache__
+**/*.py[cod]

@@ -263,7 +263,7 @@ spans and the grounding prompt are provider-agnostic; only the client's
 ### 3.4 Vector store
 
 ```bash
-docker compose up -d                  # Qdrant on :6333, storage in ./qdrant_storage
+docker compose up -d qdrant           # Qdrant on 127.0.0.1:6333, storage in ./qdrant_storage
 curl -s localhost:6333/readyz         # dashboard: http://localhost:6333/dashboard
 ```
 
@@ -329,6 +329,35 @@ uv run uvicorn src.main:app --reload --port 8000
 
 First start downloads ~1.1 GB of retrieval model weights into
 `.cache/huggingface` (the LLM itself lives in Ollama, or in the cloud).
+
+### 3.7 Run it in containers
+
+```bash
+docker compose up -d --build                       # Qdrant + API on http://127.0.0.1:8000
+docker compose exec api rag-ingest --recreate      # index ./documents (mounted read-only)
+docker compose --profile ollama up -d --build      # + Ollama in a container (see below)
+```
+
+The `Dockerfile` is multi-stage: uv resolves `uv.lock` (CPU-only torch, no dev
+tools, no eval extra) in a builder stage, and the runtime stage carries only the
+virtualenv, runs as the unprivileged `app` user (uid 10001) on a read-only root
+filesystem with every capability dropped, and has a `/health` liveness check.
+The weights are not baked into the image: `./.cache/huggingface` is
+bind-mounted, so the ones already downloaded for local development are reused,
+and every byte of state (index, weights, Ollama models) stays in this folder.
+
+**Ollama bridging.** By default the API container calls the Ollama daemon on the
+host through `host.docker.internal:11434` — on Apple Silicon that is the only
+way to keep Metal acceleration. To run the LLM in a container instead (e.g. a
+GPU-less Linux box), enable the profile and point the API at it:
+
+```bash
+OLLAMA_BASE_URL_DOCKER=http://ollama:11434/v1 docker compose --profile ollama up -d --build
+docker compose exec ollama ollama pull llama3.1:8b
+```
+
+On Linux, build with `APP_UID=$(id -u) APP_GID=$(id -g)` so the container can
+write to the bind-mounted weight cache.
 
 ---
 
@@ -608,7 +637,8 @@ Invariants enforced by `src/config.py`: `CHUNK_OVERLAP < CHUNK_SIZE`,
 ## 10. Layout
 
 ```
-├── docker-compose.yml        # isolated Qdrant 1.19, persistent ./qdrant_storage
+├── Dockerfile                # multi-stage, non-root API image (CPU-only torch)
+├── docker-compose.yml        # Qdrant + API (+ optional Ollama), all state bind-mounted
 ├── pyproject.toml            # deps + ruff/mypy/pytest config
 ├── uv.lock                   # source of truth for dependency resolution
 ├── requirements.txt          # exported from uv.lock, hash-pinned, for plain pip
@@ -616,7 +646,8 @@ Invariants enforced by `src/config.py`: `CHUNK_OVERLAP < CHUNK_SIZE`,
 ├── documents/                # corpus (sample_policy_handbook.pdf ships with the repo)
 ├── src/
 │   ├── config.py             # pydantic-settings, fail-fast validation
-│   ├── models.py             # request/response/SSE schemas
+│   ├── models.py             # request/response/SSE schemas (strict wire contracts)
+│   ├── contracts.py          # stage hand-off contracts + model/vector-store protocols
 │   ├── ingest.py             # PDF → chunks → vectors → Qdrant (CLI)
 │   ├── retriever.py          # dense recall + cross-encoder rerank
 │   └── main.py               # FastAPI app, lifespan, SSE, tracing, error mapping

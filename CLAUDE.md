@@ -39,6 +39,9 @@ default) or OpenAI.
 - `src/main.py` — app factory, lifespan, routes, sanitised error mapping, tracing façade.
 - `src/ingest.py` — offline `rag-ingest` CLI. `eval/eval_ragas.py` — Ragas harness.
 - `src/static/` — vanilla-JS chat client served at `/`.
+- `Dockerfile` / `docker-compose.yml` — non-root, read-only API image; all state bind-mounted
+  from this folder (never named volumes, which live on the host disk). `.dockerignore` is an
+  **allow-list**: a file the image needs must be added there explicitly.
 
 ## Invariants (each is covered by tests)
 
@@ -79,7 +82,8 @@ uv only — never pip/poetry/conda. Commit `uv.lock`; `requirements.txt` is expo
 
 ```bash
 uv sync --all-extras                       # runtime + eval extra + dev group
-docker compose up -d                       # local Qdrant
+docker compose up -d qdrant                # local Qdrant (127.0.0.1:6333)
+docker compose up -d --build               # Qdrant + API container (Ollama bridged from host)
 uv run rag-ingest --recreate               # index documents/
 uv run uvicorn src.main:app --reload       # serve on :8000
 ```

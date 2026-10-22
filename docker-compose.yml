@@ -1,11 +1,21 @@
 # --------------------------------------------------------------------------- #
-# Isolated Qdrant instance for rag_documents.
-#   docker compose up -d      # start
-#   docker compose down       # stop (storage volume survives)
-#   docker compose down -v    # stop and wipe the index
+# rag_documents — local stack.
+#   docker compose up -d qdrant        # vector store only (develop with `uv run`)
+#   docker compose up -d --build       # vector store + API on http://127.0.0.1:8000
+#   docker compose --profile ollama up -d --build   # + containerised Ollama
+#   docker compose down                # stop (storage survives); `down -v` wipes nothing
+#                                      # extra: every volume is a bind mount on the SSD
 #
-# Storage is bind-mounted into the project folder so the index lives on the
-# same external volume as the code — nothing is written to the host disk.
+# Every byte of state is bind-mounted from this project folder, so the index,
+# model weights and Ollama models live on the same external volume as the
+# code. Nothing is written to Docker-managed named volumes on the host disk.
+#
+# LLM bridging: by default the API talks to the Ollama daemon on the HOST
+# (http://host.docker.internal:11434) — on Apple Silicon that is the only way to
+# get Metal acceleration, which containers cannot use. On a GPU-less Linux box,
+# or to keep everything in containers, enable the `ollama` profile and set
+#   OLLAMA_BASE_URL_DOCKER=http://ollama:11434/v1
+# All published ports bind to 127.0.0.1 only.
 # --------------------------------------------------------------------------- #
 name: rag_documents
 
@@ -15,8 +25,8 @@ services:
     container_name: rag_documents-qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"   # REST + dashboard (http://localhost:6333/dashboard)
-      - "6334:6334"   # gRPC
+      - "127.0.0.1:6333:6333"   # REST + dashboard (http://localhost:6333/dashboard)
+      - "127.0.0.1:6334:6334"   # gRPC
     volumes:
       - ./qdrant_storage:/qdrant/storage
     environment:
@@ -26,9 +36,8 @@ services:
       # Keep the payload index in memory: the corpus is small, latency wins.
       QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS: 4
     healthcheck:
-      # The image is distroless: use Qdrant's own readiness endpoint via its
-      # bundled healthcheck binary rather than curl/wget.
-      test: ["CMD", "/qdrant/qdrant", "--version"]
+      # The image ships no curl/wget: probe the REST port with bash's /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -37,3 +46,74 @@ services:
       resources:
         limits:
           memory: 2G
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Match your host uid on Linux so the bind-mounted weight cache is writable
+        # (Docker Desktop on macOS maps ownership itself; the default is fine there).
+        APP_UID: ${APP_UID:-10001}
+        APP_GID: ${APP_GID:-10001}
+    image: rag_documents-api:local
+    container_name: rag_documents-api
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    # Secrets and tuning come from .env when it exists; `environment` below wins,
+    # because inside the network the endpoints differ from the host's.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL_DOCKER:-http://host.docker.internal:11434/v1}
+      # .env's relative DOCUMENTS_DIR would resolve inside site-packages here.
+      DOCUMENTS_DIR: /app/documents
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8000}
+    extra_hosts:
+      # Docker Desktop resolves this by itself; Linux engines need the mapping.
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Reuse the weights the local venv already downloaded (see .envrc HF_HOME).
+      - ./.cache/huggingface:/home/app/.cache/huggingface
+      - ./documents:/app/documents:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:0.40.0
+    container_name: rag_documents-ollama
+    restart: unless-stopped
+    ports:
+      # 11435 on the host, so it never collides with a host Ollama on 11434.
+      - "127.0.0.1:11435:11434"
+    volumes:
+      - ./.cache/ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 10G
