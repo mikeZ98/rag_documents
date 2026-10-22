@@ -1,0 +1,135 @@
+# --------------------------------------------------------------------------- #
+# CI — every gate a commit must pass before it lands on main.
+#   attribution  the git attribution invariant (CLAUDE.md), server-side: unlike
+#                the local hooks it cannot be skipped with --no-verify
+#   quality      ruff format + lint, mypy --strict, pytest with a coverage floor,
+#                lockfile and requirements.txt drift
+#   image        builds the container, then checks non-root, CPU-only torch and
+#                that no build tooling leaked into the runtime stage
+# Actions are pinned to full commit SHAs (tag in the trailing comment).
+# --------------------------------------------------------------------------- #
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.7"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  attribution:
+    name: Git attribution invariant
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Audit the commits this event introduces
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        # Only the event's own range: history recorded before the guard existed
+        # is out of scope (rewriting published commits is the owner's call).
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ -n "$BEFORE" ] && ! printf '%s' "$BEFORE" | grep -qE '^0+$'; then
+            range="$BEFORE..$AFTER"
+          else
+            range="$AFTER^!"
+          fi
+          sh scripts/check_attribution.sh "$range"
+
+  quality:
+    name: Lint, types, tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Lockfile is in sync with pyproject.toml
+        run: uv lock --check
+
+      - name: Install (runtime + eval extra + dev group)
+        run: uv sync --frozen --all-extras
+
+      - name: requirements.txt matches uv.lock
+        run: |
+          sh scripts/export_requirements.sh
+          git diff --exit-code -- requirements.txt
+
+      - name: ruff format
+        run: uv run --frozen ruff format --check .
+
+      - name: ruff check
+        run: uv run --frozen ruff check --output-format=github .
+
+      - name: mypy --strict
+        run: uv run --frozen mypy
+
+      - name: pytest (branch coverage floor in pyproject.toml)
+        run: uv run --frozen pytest --cov --cov-report=term --durations=10
+
+  image:
+    name: Container image
+    runs-on: ubuntu-24.04
+    needs: quality
+    timeout-minutes: 30
+    env:
+      IMAGE: rag_documents-api:ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compose file is valid
+        run: docker compose config --quiet
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Runs as the unprivileged app user
+        run: test "$(docker run --rm "$IMAGE" id -u)" = "10001"
+
+      - name: CPU-only torch, app importable, no build tooling in the runtime stage
+        run: |
+          docker run --rm "$IMAGE" python -c \
+            "import src.main, torch; assert torch.__version__.endswith('+cpu'), torch.__version__"
+          docker run --rm "$IMAGE" sh -c '! command -v uv && ! command -v gcc'
+          docker run --rm "$IMAGE" sh -c '! touch /app/.venv/probe' 2>/dev/null
+
+      - name: Image size
+        run: docker image inspect "$IMAGE" --format '{{.Size}}' | awk '{printf "%.0f MB\n", $1/1e6}'

@@ -20,7 +20,8 @@ Enforced, not advisory — `.githooks/` (installed by `.envrc` via `core.hooksPa
 | `commit-msg` | the identity check again (merges skip pre-commit) + co-author / AI-attribution text |
 | `pre-push` | any outgoing commit that violates either rule (covers cherry-pick / rebase replays) |
 
-`scripts/check_attribution.sh <rev-range>` audits recorded history the same way. Never pass
+`scripts/check_attribution.sh <rev-range>` audits recorded history the same way, and the CI
+`attribution` job runs it on the commits every push and PR introduces. Never pass
 `--no-verify`, never edit the guard to let a commit through, and check `git var GIT_AUTHOR_IDENT`
 before committing. Without direnv: `git config core.hooksPath .githooks`.
 `tests/test_git_hooks.py` proves each rejection path.
@@ -94,7 +95,8 @@ The gate — run before **every** commit, all must pass:
 uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest
 ```
 
-CI additionally runs `uv run pytest --cov` (branch coverage, floor 95% in `pyproject.toml`).
+CI (`.github/workflows/ci.yml`, actions pinned by SHA) also runs `uv run pytest --cov` (branch coverage, floor 95% in `pyproject.toml`), `uv lock --check`, the
+`requirements.txt` drift check, and an image build asserting non-root + CPU-only torch.
 `tests/test_pipeline_local_qdrant.py` runs ingest → retrieve against qdrant-client's in-process
 engine; prefer it over new fakes when a change touches the payload or collection layout.
 
