@@ -89,7 +89,7 @@ async def test_empty_index_short_circuits_the_reranker(settings: Settings) -> No
 
     result = await retriever.retrieve("anything", top_n=3)
 
-    assert result.chunks == []
+    assert result.chunks == ()
     assert result.candidates_considered == 0
     assert result.rerank_ms == 0.0
     assert reranker.calls == []

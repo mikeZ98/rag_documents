@@ -23,7 +23,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +45,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src import __version__
 from src.config import Settings, get_settings
+from src.contracts import RetrievalResult
 from src.models import (
     AnswerResponse,
     DoneEvent,
@@ -61,7 +62,6 @@ from src.models import (
 )
 from src.retriever import (
     RetrievalError,
-    RetrievalResult,
     TwoStageRetriever,
     build_context_block,
     build_qdrant_client,
@@ -619,7 +619,7 @@ def _sse(model: SourcesEvent | TokenEvent | DoneEvent | ErrorEvent) -> ServerSen
 async def _generate_sse(
     context: AppContext,
     payload: QueryRequest,
-    chunks: list[RetrievedChunk],
+    chunks: Sequence[RetrievedChunk],
     sources_event: SourcesEvent,
     trace: Span,
 ) -> AsyncIterator[ServerSentEvent]:

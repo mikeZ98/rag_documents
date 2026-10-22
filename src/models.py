@@ -3,6 +3,11 @@
 Everything crossing the process boundary — HTTP request bodies, HTTP
 responses and SSE event payloads — is declared here so the wire format has a
 single source of truth (and FastAPI can derive an accurate OpenAPI document).
+
+Every model derives from `WireModel`: unknown fields are rejected, instances
+are immutable, and validation is strict (no `"3"` → `3` or `true` → `1`
+coercion), so a malformed payload fails at the boundary instead of deep inside
+the pipeline.
 """
 
 from __future__ import annotations
@@ -20,6 +25,12 @@ QueryText = Annotated[
 ]
 
 
+class WireModel(BaseModel):
+    """Base for every schema that crosses the process boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
 class SSEEventType(StrEnum):
     """Names of the Server-Sent Events emitted by `POST /rag/stream`."""
 
@@ -32,11 +43,10 @@ class SSEEventType(StrEnum):
 # --------------------------------------------------------------------------- #
 # Requests
 # --------------------------------------------------------------------------- #
-class QueryRequest(BaseModel):
+class QueryRequest(WireModel):
     """Inbound RAG question."""
 
     model_config = ConfigDict(
-        extra="forbid",
         json_schema_extra={
             "examples": [
                 {
@@ -65,10 +75,8 @@ class QueryRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 # Retrieval results
 # --------------------------------------------------------------------------- #
-class RetrievedChunk(BaseModel):
+class RetrievedChunk(WireModel):
     """A passage that survived both retrieval stages."""
-
-    model_config = ConfigDict(frozen=True)
 
     text: str = Field(description="Verbatim chunk text used to ground the answer.")
     source: str = Field(description="Originating file name, e.g. `handbook.pdf`.")
@@ -82,12 +90,12 @@ class RetrievedChunk(BaseModel):
         return f"{self.source} p.{self.page}"
 
 
-class SourceReference(BaseModel):
+class SourceReference(WireModel):
     """Chunk projection sent to clients (text truncated to a preview)."""
 
     source: str
-    page: int
-    chunk_index: int
+    page: int = Field(ge=1)
+    chunk_index: int = Field(ge=0)
     dense_score: float
     rerank_score: float
     preview: str = Field(description="First 280 characters of the grounding passage.")
@@ -110,7 +118,7 @@ class SourceReference(BaseModel):
 # --------------------------------------------------------------------------- #
 # Responses
 # --------------------------------------------------------------------------- #
-class TokenUsage(BaseModel):
+class TokenUsage(WireModel):
     """LLM token accounting, mirrored into the Langfuse generation span."""
 
     input_tokens: int = Field(default=0, ge=0)
@@ -121,7 +129,7 @@ class TokenUsage(BaseModel):
         return self.input_tokens + self.output_tokens
 
 
-class SearchResponse(BaseModel):
+class SearchResponse(WireModel):
     """Result of retrieval-only calls (`POST /rag/search`)."""
 
     query: str
@@ -132,7 +140,7 @@ class SearchResponse(BaseModel):
     retrieval_ms: float = Field(ge=0)
 
 
-class AnswerResponse(BaseModel):
+class AnswerResponse(WireModel):
     """Result of buffered generation (`POST /rag/answer`)."""
 
     query: str
@@ -145,7 +153,7 @@ class AnswerResponse(BaseModel):
     trace_id: str | None = None
 
 
-class HealthResponse(BaseModel):
+class HealthResponse(WireModel):
     """Liveness/readiness payload (`GET /health`)."""
 
     status: Literal["ok", "degraded"]
@@ -163,7 +171,7 @@ class HealthResponse(BaseModel):
     detail: str | None = None
 
 
-class ErrorResponse(BaseModel):
+class ErrorResponse(WireModel):
     """Sanitised error body — internal exception details never reach the client."""
 
     error: str = Field(description="Stable, machine-readable error code.")
@@ -174,7 +182,7 @@ class ErrorResponse(BaseModel):
 # --------------------------------------------------------------------------- #
 # SSE event payloads
 # --------------------------------------------------------------------------- #
-class SourcesEvent(BaseModel):
+class SourcesEvent(WireModel):
     """First event of a stream: what the answer will be grounded in."""
 
     type: Literal[SSEEventType.SOURCES] = SSEEventType.SOURCES
@@ -185,14 +193,14 @@ class SourcesEvent(BaseModel):
     trace_id: str | None = None
 
 
-class TokenEvent(BaseModel):
+class TokenEvent(WireModel):
     """One LLM delta."""
 
     type: Literal[SSEEventType.TOKEN] = SSEEventType.TOKEN
     text: str
 
 
-class DoneEvent(BaseModel):
+class DoneEvent(WireModel):
     """Terminal event of a successful stream."""
 
     type: Literal[SSEEventType.DONE] = SSEEventType.DONE
@@ -201,7 +209,7 @@ class DoneEvent(BaseModel):
     finish_reason: str | None = None
 
 
-class ErrorEvent(BaseModel):
+class ErrorEvent(WireModel):
     """Terminal event of a failed stream (HTTP status is already 200 by then)."""
 
     type: Literal[SSEEventType.ERROR] = SSEEventType.ERROR

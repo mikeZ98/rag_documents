@@ -8,6 +8,8 @@ Design notes
 ------------
 * Point ids are deterministic (`uuid5` of source+page+chunk index), so a
   re-run upserts in place instead of duplicating the corpus.
+* Stage hand-offs are validated contracts (`src.contracts`): a vector of the
+  wrong width is rejected right after embedding, before Qdrant is touched.
 * Embedding happens in batches of `EMBEDDING_BATCH_SIZE` with L2-normalised
   output, matching the cosine distance configured on the collection.
 * The collection is created with an explicit HNSW configuration rather than
@@ -20,7 +22,6 @@ import argparse
 import logging
 import re
 import sys
-import uuid
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from rich.table import Table
 
 from src.config import Settings, get_settings
+from src.contracts import Chunk, DocumentExtraction, IndexBatch, PageText
 from src.retriever import load_embedding_model
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -42,9 +44,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger("src.ingest")
 console = Console()
-
-# uuid5 namespace for this project — keeps generated ids stable across runs.
-POINT_NAMESPACE = uuid.UUID("6f1c2d3e-8a4b-5c6d-9e0f-1a2b3c4d5e6f")
 
 # Ordered from strongest to weakest semantic boundary: markdown headings,
 # paragraphs, lines, sentences, clauses, words, characters.
@@ -70,30 +69,11 @@ _HYPHEN_BREAK_RE = re.compile(r"(\w)-\n(\w)")
 
 
 @dataclass(frozen=True, slots=True)
-class PageText:
-    """Raw text of a single PDF page."""
-
-    source: str
-    page: int  # 1-indexed, as printed in the document
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
 class SkippedFile:
     """A directory entry that was deliberately not ingested."""
 
     name: str
     reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class DocumentExtraction:
-    """Everything one PDF contributed, including what went wrong inside it."""
-
-    source: str
-    pages: list[PageText]
-    failed_pages: int = 0
-    status: str = "ok"
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,21 +85,6 @@ class FileReport:
     chunks: int
     failed_pages: int
     status: str
-
-
-@dataclass(frozen=True, slots=True)
-class Chunk:
-    """A splitter-produced passage with full provenance."""
-
-    text: str
-    source: str
-    page: int
-    chunk_index: int
-
-    @property
-    def point_id(self) -> str:
-        """Deterministic id so repeated ingestion updates rather than duplicates."""
-        return str(uuid.uuid5(POINT_NAMESPACE, f"{self.source}:{self.page}:{self.chunk_index}"))
 
 
 # --------------------------------------------------------------------------- #
@@ -146,11 +111,11 @@ def extract_document(path: Path) -> DocumentExtraction:
         # Many "protected" PDFs open with an empty owner password; the rest we skip.
         if reader.is_encrypted and reader.decrypt("") == 0:
             logger.warning("Skipping encrypted PDF: %s", path.name)
-            return DocumentExtraction(path.name, [], status="encrypted")
+            return DocumentExtraction(source=path.name, status="encrypted")
         page_count = len(reader.pages)
     except (PdfReadError, OSError, ValueError, KeyError) as exc:
         logger.error("Cannot read %s: %s", path.name, exc)
-        return DocumentExtraction(path.name, [], status="unreadable")
+        return DocumentExtraction(source=path.name, status="unreadable")
 
     pages: list[PageText] = []
     failed = 0
@@ -168,9 +133,11 @@ def extract_document(path: Path) -> DocumentExtraction:
     if not pages:
         # Almost always a scanned/image-only PDF: real input, no text layer.
         logger.warning("No extractable text in %s (scanned or image-only?)", path.name)
-        return DocumentExtraction(path.name, [], failed, "no text layer")
+        return DocumentExtraction(source=path.name, failed_pages=failed, status="no text layer")
     status = "ok" if failed == 0 else f"{failed} page(s) unreadable"
-    return DocumentExtraction(path.name, pages, failed, status)
+    return DocumentExtraction(
+        source=path.name, pages=tuple(pages), failed_pages=failed, status=status
+    )
 
 
 def extract_pdf(path: Path) -> Iterator[PageText]:
@@ -285,8 +252,8 @@ def ensure_collection(client: QdrantClient, settings: Settings, *, recreate: boo
 
 def embed_chunks(
     model: SentenceTransformer, chunks: Sequence[Chunk], settings: Settings
-) -> list[list[float]]:
-    """Batch-embed chunk texts into normalised vectors."""
+) -> IndexBatch:
+    """Batch-embed chunk texts into normalised vectors, validated against the collection."""
     texts = [chunk.text for chunk in chunks]
     vectors = model.encode(
         texts,
@@ -295,17 +262,17 @@ def embed_chunks(
         convert_to_numpy=True,
         show_progress_bar=False,
     )
-    return [[float(value) for value in vector] for vector in vectors]
+    return IndexBatch(
+        chunks=tuple(chunks),
+        vectors=tuple(tuple(float(value) for value in vector) for vector in vectors),
+        dimension=settings.embedding_dimension,
+    )
 
 
-def upsert_chunks(
-    client: QdrantClient,
-    settings: Settings,
-    chunks: Sequence[Chunk],
-    vectors: Sequence[Sequence[float]],
-) -> int:
+def upsert_chunks(client: QdrantClient, settings: Settings, batch: IndexBatch) -> int:
     """Upsert points in batches; returns the number of points written."""
     batch_size = settings.ingest_upsert_batch_size
+    chunks, vectors = batch.chunks, batch.vectors
     written = 0
     for start in range(0, len(chunks), batch_size):
         window = chunks[start : start + batch_size]
@@ -393,7 +360,7 @@ def run_ingestion(settings: Settings, *, recreate: bool, dry_run: bool) -> int:
 
     model = load_embedding_model(settings)
     with console.status(f"Embedding {len(all_chunks)} chunks…", spinner="dots"):
-        vectors = embed_chunks(model, all_chunks, settings)
+        batch = embed_chunks(model, all_chunks, settings)
 
     client = QdrantClient(
         host=settings.qdrant_host,
@@ -404,7 +371,7 @@ def run_ingestion(settings: Settings, *, recreate: bool, dry_run: bool) -> int:
     try:
         ensure_collection(client, settings, recreate=recreate)
         with console.status("Upserting into Qdrant…", spinner="dots"):
-            written = upsert_chunks(client, settings, all_chunks, vectors)
+            written = upsert_chunks(client, settings, batch)
         total_points = client.count(settings.qdrant_collection, exact=True).count
     finally:
         client.close()

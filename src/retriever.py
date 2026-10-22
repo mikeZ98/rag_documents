@@ -17,12 +17,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
 from qdrant_client import AsyncQdrantClient
 
 from src.config import Settings
+from src.contracts import PairScorer, RetrievalResult, RetrieverComponents, TextEncoder
 from src.models import RetrievedChunk
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, keeps import time low
@@ -34,42 +35,6 @@ PAYLOAD_TEXT_KEY = "text"
 PAYLOAD_SOURCE_KEY = "source"
 PAYLOAD_PAGE_KEY = "page"
 PAYLOAD_CHUNK_KEY = "chunk_index"
-
-
-# --------------------------------------------------------------------------- #
-# Structural typing — lets tests inject trivial fakes without importing torch.
-# --------------------------------------------------------------------------- #
-@runtime_checkable
-class TextEncoder(Protocol):
-    """Minimal surface of `sentence_transformers.SentenceTransformer` we rely on.
-
-    The signature is intentionally permissive: `sentence-transformers` renames
-    and overloads these parameters between minor releases, and we only ever
-    call them with the keywords below.
-    """
-
-    def encode(self, *args: Any, **kwargs: Any) -> Any: ...
-
-
-@runtime_checkable
-class PairScorer(Protocol):
-    """Minimal surface of `sentence_transformers.CrossEncoder` we rely on."""
-
-    def predict(self, *args: Any, **kwargs: Any) -> Any: ...
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalResult:
-    """Outcome of a two-stage retrieval pass, with per-stage timings."""
-
-    chunks: list[RetrievedChunk]
-    candidates_considered: int
-    dense_ms: float
-    rerank_ms: float
-
-    @property
-    def total_ms(self) -> float:
-        return self.dense_ms + self.rerank_ms
 
 
 class RetrievalError(RuntimeError):
@@ -164,9 +129,12 @@ class TwoStageRetriever:
         reranker: PairScorer,
         settings: Settings,
     ) -> None:
+        # Fail at wiring time (lifespan), not on the first query, if a loader
+        # handed back something that is not a usable model.
+        components = RetrieverComponents(encoder=encoder, reranker=reranker)
         self._client = client
-        self._encoder = encoder
-        self._reranker = reranker
+        self._encoder = components.encoder
+        self._reranker = components.reranker
         self._settings = settings
 
     # ------------------------------ Stage 1 -------------------------------- #
@@ -255,7 +223,9 @@ class TwoStageRetriever:
 
         if not dense_candidates:
             logger.info("Dense retrieval returned no candidates for query=%r", query[:80])
-            return RetrievalResult([], 0, dense_ms, 0.0)
+            return RetrievalResult(
+                chunks=(), candidates_considered=0, dense_ms=dense_ms, rerank_ms=0.0
+            )
 
         rerank_started = time.perf_counter()
         reranked = await self._rerank(query, dense_candidates, keep)
@@ -268,7 +238,12 @@ class TwoStageRetriever:
             dense_ms,
             rerank_ms,
         )
-        return RetrievalResult(reranked, len(dense_candidates), dense_ms, rerank_ms)
+        return RetrievalResult(
+            chunks=tuple(reranked),
+            candidates_considered=len(dense_candidates),
+            dense_ms=dense_ms,
+            rerank_ms=rerank_ms,
+        )
 
     # ------------------------------ Health --------------------------------- #
     async def collection_points(self) -> int | None:
@@ -285,7 +260,7 @@ class TwoStageRetriever:
         await self._client.close()
 
 
-def build_context_block(chunks: list[RetrievedChunk]) -> str:
+def build_context_block(chunks: Sequence[RetrievedChunk]) -> str:
     """Render retrieved chunks as an enumerated, citable context block.
 
     Each passage is fenced and labelled so the model can cite `[1]`, `[2]`…

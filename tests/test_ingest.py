@@ -9,9 +9,8 @@ from typing import ClassVar
 
 import pytest
 from src.config import PROJECT_ROOT, Settings
+from src.contracts import Chunk, PageText
 from src.ingest import (
-    Chunk,
-    PageText,
     build_splitter,
     chunk_pages,
     discover_pdfs,
@@ -208,7 +207,7 @@ def test_scanned_pdf_without_a_text_layer_is_reported(
 
     extraction = extract_document(path)
 
-    assert extraction.pages == []
+    assert extraction.pages == ()
     assert extraction.status == "no text layer"
 
 
@@ -218,7 +217,7 @@ def test_unreadable_document_reports_status(tmp_path: Path) -> None:
 
     extraction = extract_document(broken)
 
-    assert extraction.pages == []
+    assert extraction.pages == ()
     assert extraction.status == "unreadable"
 
 

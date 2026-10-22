@@ -34,6 +34,7 @@ default) or OpenAI.
 
 - `src/config.py` — `Settings` (pydantic-settings, 12-factor). Every knob is an env var.
 - `src/models.py` — every wire schema (HTTP bodies, SSE payloads). Single source of truth.
+- `src/contracts.py` — internal stage hand-offs + the model protocols the retriever accepts.
 - `src/retriever.py` — `TwoStageRetriever`; models/clients injected, owns no lifecycle.
 - `src/main.py` — app factory, lifespan, routes, sanitised error mapping, tracing façade.
 - `src/ingest.py` — offline `rag-ingest` CLI. `eval/eval_ragas.py` — Ragas harness.
@@ -53,7 +54,12 @@ default) or OpenAI.
    (computed fields leak into `repr` / `model_dump`).
 6. **Idempotent ingestion.** Point ids are `uuid5(source:page:chunk)`; re-runs upsert in place.
 7. **Tracing is best effort.** A broken Langfuse exporter degrades to "no trace", never to a 500.
-8. **The suite is hermetic.** Tests never reach Qdrant, an LLM, HuggingFace or Langfuse —
+8. **Strict contracts at every boundary.** Wire schemas derive from `models.WireModel`, stage
+   hand-offs (`DocumentExtraction`, `IndexBatch`, `RetrievalResult`, `RetrieverComponents`) from
+   `contracts.StageContract`: `extra="forbid"`, `frozen`, `strict`, collections as tuples, foreign
+   runtime objects as `InstanceOf[Protocol]`. Put new invariants in the contract's validator, not
+   in the consumer. `tests/test_contracts.py` checks every schema's config by reflection.
+9. **The suite is hermetic.** Tests never reach Qdrant, an LLM, HuggingFace or Langfuse —
    `tests/conftest.py` provides the fakes.
 
 ## Environment (Kingston SSD only)

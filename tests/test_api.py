@@ -89,6 +89,12 @@ async def test_health_degrades_when_collection_empty(
         ({"query": "valid question", "k": 0}, "k below 1"),
         ({"query": "valid question", "k": 11}, "k above 10"),
         ({"query": "valid question", "k": "three"}, "k not an integer"),
+        # Strict contract: no lax coercion of JSON scalars.
+        ({"query": "valid question", "k": "3"}, "k as a numeric string"),
+        ({"query": "valid question", "k": True}, "k as a boolean"),
+        ({"query": "valid question", "k": 3.0}, "k as a float"),
+        ({"query": 12345}, "query not a string"),
+        ({"query": "valid question", "session_id": 42}, "session_id not a string"),
         ({"k": 3}, "missing query"),
         ({"query": "valid question", "unexpected": True}, "unknown field"),
     ],
