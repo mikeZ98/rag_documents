@@ -393,6 +393,7 @@ async def run_retrieval(
                 "candidates_considered": result.candidates_considered,
             },
             metadata={
+                "ranking": result.ranking,
                 "dense_ms": round(result.dense_ms, 2),
                 "rerank_ms": round(result.rerank_ms, 2),
             },
@@ -478,6 +479,7 @@ async def search(payload: QueryRequest, context: AppContext = ContextDep) -> Sea
         query=payload.query,
         sources=[SourceReference.from_chunk(chunk) for chunk in result.chunks],
         candidates_considered=result.candidates_considered,
+        ranking=result.ranking,
         retrieval_ms=round(result.total_ms, 2),
     )
 
@@ -509,6 +511,7 @@ async def answer(payload: QueryRequest, context: AppContext = ContextDep) -> Ans
                     query=payload.query,
                     answer=NO_CONTEXT_ANSWER,
                     sources=[],
+                    ranking=result.ranking,
                     usage=TokenUsage(),
                     retrieval_ms=round(result.total_ms, 2),
                     generation_ms=0.0,
@@ -556,6 +559,7 @@ async def answer(payload: QueryRequest, context: AppContext = ContextDep) -> Ans
         query=payload.query,
         answer=text,
         sources=[SourceReference.from_chunk(chunk) for chunk in result.chunks],
+        ranking=result.ranking,
         usage=usage,
         retrieval_ms=round(result.total_ms, 2),
         generation_ms=round(generation_ms, 2),
@@ -601,6 +605,7 @@ async def stream(payload: QueryRequest, context: AppContext = ContextDep) -> Eve
         query=payload.query,
         sources=[SourceReference.from_chunk(chunk) for chunk in result.chunks],
         candidates_considered=result.candidates_considered,
+        ranking=result.ranking,
         retrieval_ms=round(result.total_ms, 2),
         trace_id=trace.trace_id,
     )

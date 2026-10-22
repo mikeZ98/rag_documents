@@ -155,6 +155,64 @@ async def test_search_maps_vector_store_failure_to_503(
     assert "qdrant down" not in json.dumps(body)
 
 
+def _break_reranker(context: AppContext, monkeypatch: pytest.MonkeyPatch) -> None:
+    def explode(*_args: Any, **_kwargs: Any) -> Any:
+        msg = "reranker weights failed to load"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(context.retriever._reranker, "predict", explode)
+
+
+async def test_search_reports_cross_encoder_ranking(client: httpx.AsyncClient) -> None:
+    body = (await client.post("/rag/search", json={"query": "notice period"})).json()
+
+    assert body["ranking"] == "cross_encoder"
+
+
+async def test_search_degrades_to_dense_ranking_when_the_reranker_fails(
+    client: httpx.AsyncClient, context: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _break_reranker(context, monkeypatch)
+
+    response = await client.post("/rag/search", json={"query": "notice period", "k": 2})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ranking"] == "dense_fallback"
+    assert len(body["sources"]) == 2
+    assert "weights" not in json.dumps(body)
+
+
+async def test_search_survives_one_transient_vector_store_failure(
+    client: httpx.AsyncClient, qdrant: FakeQdrantClient
+) -> None:
+    qdrant.failures = [ConnectionError("connection reset")]
+
+    response = await client.post("/rag/search", json={"query": "notice period"})
+
+    assert response.status_code == 200
+    assert len(qdrant.calls) == 2
+
+
+async def test_stream_sources_event_carries_the_ranking(
+    client: httpx.AsyncClient, context: AppContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _break_reranker(context, monkeypatch)
+
+    async with client.stream("POST", "/rag/stream", json={"query": "notice period"}) as response:
+        body = "".join([chunk async for chunk in response.aiter_text()])
+
+    name, data = parse_sse(body)[0]
+    assert name == "sources"
+    assert json.loads(data)["ranking"] == "dense_fallback"
+
+
+async def test_answer_reports_the_ranking(client: httpx.AsyncClient) -> None:
+    body = (await client.post("/rag/answer", json={"query": "notice period"})).json()
+
+    assert body["ranking"] == "cross_encoder"
+
+
 async def test_search_times_out_with_504(
     client: httpx.AsyncClient, context: AppContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:

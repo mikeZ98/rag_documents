@@ -21,7 +21,7 @@ from src.contracts import (
 from src.ingest import embed_chunks
 from src.models import QueryRequest, RetrievedChunk, TokenUsage
 
-from .conftest import FakeEncoder, FakeReranker
+from .conftest import FakeEncoder, FakeQdrantClient, FakeReranker
 
 
 def _schemas(module: Any) -> list[type[BaseModel]]:
@@ -126,26 +126,36 @@ def test_retrieval_result_rejects_negative_timings() -> None:
 # --------------------------------------------------------------------------- #
 # Retriever wiring (InstanceOf protocols)
 # --------------------------------------------------------------------------- #
-def test_retriever_models_accept_structural_fakes() -> None:
-    components = RetrieverComponents(encoder=FakeEncoder(), reranker=FakeReranker())
+def test_retriever_components_accept_structural_fakes() -> None:
+    components = RetrieverComponents(
+        store=FakeQdrantClient(), encoder=FakeEncoder(), reranker=FakeReranker()
+    )
 
     assert isinstance(components.encoder, FakeEncoder)
 
 
 @pytest.mark.parametrize(
-    ("encoder", "reranker"),
-    [(None, FakeReranker()), (FakeEncoder(), FakeEncoder()), (FakeReranker(), FakeReranker())],
+    ("store", "encoder", "reranker"),
+    [
+        (FakeQdrantClient(), None, FakeReranker()),
+        (FakeQdrantClient(), FakeEncoder(), FakeEncoder()),
+        (FakeQdrantClient(), FakeReranker(), FakeReranker()),
+        (object(), FakeEncoder(), FakeReranker()),
+        ("http://localhost:6333", FakeEncoder(), FakeReranker()),
+    ],
 )
-def test_retriever_models_reject_objects_without_the_model_surface(
-    encoder: object, reranker: object
+def test_retriever_components_reject_objects_without_the_expected_surface(
+    store: object, encoder: object, reranker: object
 ) -> None:
     with pytest.raises(ValidationError, match="is_instance_of"):
-        RetrieverComponents(encoder=encoder, reranker=reranker)  # type: ignore[arg-type]
+        RetrieverComponents(store=store, encoder=encoder, reranker=reranker)  # type: ignore[arg-type]
 
 
-def test_retriever_models_reject_a_model_name_in_place_of_the_model() -> None:
+def test_retriever_components_reject_a_model_name_in_place_of_the_model() -> None:
     with pytest.raises(ValidationError, match="expected a loaded model"):
-        RetrieverComponents(encoder="all-MiniLM-L6-v2", reranker=FakeReranker())
+        RetrieverComponents(
+            store=FakeQdrantClient(), encoder="all-MiniLM-L6-v2", reranker=FakeReranker()
+        )
 
 
 # --------------------------------------------------------------------------- #

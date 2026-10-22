@@ -28,7 +28,7 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 from pydantic import SecretStr
-from qdrant_client import AsyncQdrantClient
+from qdrant_client.http import models as rest
 from src.config import Settings
 from src.main import AppContext, Tracing, create_app
 from src.retriever import TwoStageRetriever
@@ -69,24 +69,17 @@ CORPUS: list[dict[str, Any]] = [
 # Fake vector store
 # --------------------------------------------------------------------------- #
 @dataclass
-class FakePoint:
-    id: str
-    score: float
-    payload: dict[str, Any]
-
-
-@dataclass
-class FakeQueryResponse:
-    points: list[FakePoint]
-
-
-@dataclass
 class FakeCollectionInfo:
     points_count: int
 
 
 class FakeQdrantClient:
-    """Minimal async stand-in for `AsyncQdrantClient`."""
+    """In-memory `VectorStore` returning the real qdrant-client response models.
+
+    `fail` raises on every query; `failures` are raised one per call, in order,
+    before the store starts answering — for exercising the retry policy.
+    `scores` overrides the default strictly-descending dense scores.
+    """
 
     def __init__(
         self,
@@ -94,23 +87,49 @@ class FakeQdrantClient:
         *,
         points_count: int | None = 42,
         fail: Exception | None = None,
+        failures: list[Exception] | None = None,
+        scores: list[float] | None = None,
     ) -> None:
         self.corpus = corpus if corpus is not None else CORPUS
         self.points_count = points_count
         self.fail = fail
+        self.failures = list(failures or [])
+        self.scores = scores
         self.calls: list[dict[str, Any]] = []
         self.closed = False
 
-    async def query_points(self, **kwargs: Any) -> FakeQueryResponse:
-        self.calls.append(kwargs)
+    async def query_points(
+        self,
+        collection_name: str,
+        query: list[float],
+        *,
+        limit: int,
+        with_payload: bool,
+        score_threshold: float | None,
+    ) -> rest.QueryResponse:
+        self.calls.append(
+            {
+                "collection_name": collection_name,
+                "query": query,
+                "limit": limit,
+                "with_payload": with_payload,
+                "score_threshold": score_threshold,
+            }
+        )
         if self.fail is not None:
             raise self.fail
-        limit = int(kwargs.get("limit", 10))
+        if self.failures:
+            raise self.failures.pop(0)
         points = [
-            FakePoint(id=f"p{index}", score=round(0.9 - index * 0.05, 4), payload=dict(item))
+            rest.ScoredPoint(
+                id=f"p{index}",
+                version=0,
+                score=self.scores[index] if self.scores else round(0.9 - index * 0.05, 4),
+                payload=dict(item),
+            )
             for index, item in enumerate(self.corpus[:limit])
         ]
-        return FakeQueryResponse(points=points)
+        return rest.QueryResponse(points=points)
 
     async def get_collection(self, collection_name: str) -> FakeCollectionInfo:
         if self.points_count is None:
@@ -281,6 +300,7 @@ def settings() -> Settings:
         langfuse_enabled=False,
         retrieval_candidates=4,
         rerank_top_n=3,
+        qdrant_retry_backoff_seconds=0.0,
         retrieval_timeout_seconds=5.0,
         generation_timeout_seconds=5.0,
         request_timeout_seconds=5.0,
@@ -315,7 +335,7 @@ def openai_client() -> FakeOpenAIClient:
 @pytest.fixture
 def retriever(settings: Settings, qdrant: FakeQdrantClient) -> TwoStageRetriever:
     return TwoStageRetriever(
-        client=cast(AsyncQdrantClient, qdrant),
+        client=qdrant,
         encoder=FakeEncoder(),
         reranker=FakeReranker(),
         settings=settings,

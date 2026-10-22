@@ -108,9 +108,11 @@
     summary.append(element("span", "chevron", "›"));
     summary.append(element("span", null, "Retrieved Sources & Context"));
     summary.append(element("span", "badge-count", String(payload.sources.length)));
-    summary.append(
-      element("span", null, `· reranked from ${payload.candidates_considered} candidates`),
-    );
+    const ranked =
+      payload.ranking === "dense_fallback"
+        ? `· dense ranking only (reranker unavailable) of ${payload.candidates_considered} candidates`
+        : `· reranked from ${payload.candidates_considered} candidates`;
+    summary.append(element("span", null, ranked));
     details.append(summary);
 
     const body = element("div", "sources-body");

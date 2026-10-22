@@ -10,21 +10,42 @@ Stage 2 (precision) — a cross-encoder re-scores every (query, passage) pair
 
 Both models are CPU-bound PyTorch graphs, so every call into them is pushed
 onto a worker thread via `asyncio.to_thread` — the event loop never blocks.
+
+Failure behaviour is deterministic and bounded:
+
+* Transient vector-store errors (transport failures, HTTP 429/5xx) are retried
+  `QDRANT_MAX_RETRIES` times with a fixed linear backoff, all inside the
+  request's retrieval deadline; anything else fails fast as `RetrievalError`.
+* A malformed point payload is skipped, never turned into a 500.
+* If the cross-encoder raises or returns unusable scores, the passages are
+  ranked by dense similarity instead and the result says so
+  (`ranking="dense_fallback"`) — degraded, still grounded, never silent.
+* Ties are broken by (dense score, source, page, chunk index), so the same
+  index and query always yield the same passages in the same order.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http import models as rest
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 
 from src.config import Settings
-from src.contracts import PairScorer, RetrievalResult, RetrieverComponents, TextEncoder
-from src.models import RetrievedChunk
+from src.contracts import (
+    PairScorer,
+    RetrievalResult,
+    RetrieverComponents,
+    TextEncoder,
+    VectorStore,
+)
+from src.models import Ranking, RetrievedChunk
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, keeps import time low
     from sentence_transformers import CrossEncoder, SentenceTransformer
@@ -39,6 +60,44 @@ PAYLOAD_CHUNK_KEY = "chunk_index"
 
 class RetrievalError(RuntimeError):
     """Raised when the vector store cannot serve a query."""
+
+
+def is_transient(exc: BaseException) -> bool:
+    """True for failures a retry can fix: transport errors, throttling, 5xx."""
+    if isinstance(exc, UnexpectedResponse):
+        return exc.status_code is not None and (exc.status_code == 429 or exc.status_code >= 500)
+    return isinstance(exc, ResponseHandlingException | ConnectionError | TimeoutError)
+
+
+def _rerank_order(chunk: RetrievedChunk) -> tuple[float, float, str, int, int]:
+    return (-chunk.rerank_score, -chunk.dense_score, chunk.source, chunk.page, chunk.chunk_index)
+
+
+def _dense_order(chunk: RetrievedChunk) -> tuple[float, str, int, int]:
+    return (-chunk.dense_score, chunk.source, chunk.page, chunk.chunk_index)
+
+
+def chunk_from_point(point: rest.ScoredPoint) -> RetrievedChunk | None:
+    """Map a Qdrant hit onto a `RetrievedChunk`, or None if its payload is unusable."""
+    payload: dict[str, Any] = dict(point.payload or {})
+    text = payload.get(PAYLOAD_TEXT_KEY)
+    source = payload.get(PAYLOAD_SOURCE_KEY)
+    page = payload.get(PAYLOAD_PAGE_KEY)
+    if not text or not source or page is None:
+        logger.warning("Skipping point %s: incomplete payload", point.id)
+        return None
+    try:
+        return RetrievedChunk(
+            text=str(text),
+            source=str(source),
+            page=int(page),
+            chunk_index=int(payload.get(PAYLOAD_CHUNK_KEY, 0)),
+            dense_score=float(point.score),
+            rerank_score=0.0,
+        )
+    except (TypeError, ValueError) as exc:  # pydantic's ValidationError is a ValueError
+        logger.warning("Skipping point %s: malformed payload (%s)", point.id, exc)
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -124,15 +183,15 @@ class TwoStageRetriever:
     def __init__(
         self,
         *,
-        client: AsyncQdrantClient,
+        client: VectorStore,
         encoder: TextEncoder,
         reranker: PairScorer,
         settings: Settings,
     ) -> None:
         # Fail at wiring time (lifespan), not on the first query, if a loader
-        # handed back something that is not a usable model.
-        components = RetrieverComponents(encoder=encoder, reranker=reranker)
-        self._client = client
+        # handed back something that is not a usable model or store.
+        components = RetrieverComponents(store=client, encoder=encoder, reranker=reranker)
+        self._client = components.store
         self._encoder = components.encoder
         self._reranker = components.reranker
         self._settings = settings
@@ -149,58 +208,92 @@ class TwoStageRetriever:
         )
         return [float(value) for value in vector]
 
-    async def _dense_search(self, vector: list[float], limit: int) -> list[RetrievedChunk]:
-        try:
-            response = await self._client.query_points(
-                collection_name=self._settings.qdrant_collection,
-                query=vector,
-                limit=limit,
-                with_payload=True,
-                score_threshold=self._settings.score_threshold,
-            )
-        except Exception as exc:
-            msg = f"Qdrant query failed for collection '{self._settings.qdrant_collection}'"
-            raise RetrievalError(msg) from exc
-
-        chunks: list[RetrievedChunk] = []
-        for point in response.points:
-            payload: dict[str, Any] = dict(point.payload or {})
-            text = payload.get(PAYLOAD_TEXT_KEY)
-            source = payload.get(PAYLOAD_SOURCE_KEY)
-            page = payload.get(PAYLOAD_PAGE_KEY)
-            if not text or not source or page is None:
-                logger.warning("Skipping point %s: incomplete payload", point.id)
-                continue
-            chunks.append(
-                RetrievedChunk(
-                    text=str(text),
-                    source=str(source),
-                    page=int(page),
-                    chunk_index=int(payload.get(PAYLOAD_CHUNK_KEY, 0)),
-                    dense_score=float(point.score),
-                    rerank_score=0.0,
+    async def _query(self, vector: list[float], limit: int) -> rest.QueryResponse:
+        """`query_points` with bounded, deterministic retries on transient failures."""
+        collection = self._settings.qdrant_collection
+        attempts = self._settings.qdrant_max_retries + 1
+        attempt = 1
+        while True:
+            try:
+                return await self._client.query_points(
+                    collection_name=collection,
+                    query=vector,
+                    limit=limit,
+                    with_payload=True,
+                    score_threshold=self._settings.score_threshold,
                 )
-            )
+            except Exception as exc:
+                if attempt >= attempts or not is_transient(exc):
+                    msg = (
+                        f"Qdrant query failed for collection '{collection}' "
+                        f"after {attempt} attempt(s)"
+                    )
+                    raise RetrievalError(msg) from exc
+                delay = self._settings.qdrant_retry_backoff_seconds * attempt
+                logger.warning(
+                    "Transient Qdrant failure (%s), retry %d/%d in %.2fs",
+                    type(exc).__name__,
+                    attempt,
+                    attempts - 1,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+
+    async def _dense_search(self, vector: list[float], limit: int) -> list[RetrievedChunk]:
+        """Stage 1: nearest chunks, minus unusable payloads and duplicate passages."""
+        response = await self._query(vector, limit)
+        chunks: list[RetrievedChunk] = []
+        seen: set[tuple[str, int, int]] = set()
+        # Qdrant returns hits by descending score, so the first copy kept is the best.
+        for point in response.points:
+            chunk = chunk_from_point(point)
+            if chunk is None:
+                continue
+            key = (chunk.source, chunk.page, chunk.chunk_index)
+            if key in seen:
+                logger.debug("Dropping duplicate passage %s p.%d #%d", *key)
+                continue
+            seen.add(key)
+            chunks.append(chunk)
         return chunks
 
     # ------------------------------ Stage 2 -------------------------------- #
-    async def _rerank(
-        self, query: str, candidates: list[RetrievedChunk], top_n: int
-    ) -> list[RetrievedChunk]:
-        """Score every (query, passage) pair and keep the best `top_n`."""
+    async def _score_pairs(self, query: str, candidates: Sequence[RetrievedChunk]) -> list[float]:
+        """Cross-encoder scores, one finite float per candidate — or ValueError."""
         pairs = [[query, chunk.text] for chunk in candidates]
-        scores = await asyncio.to_thread(
+        raw = await asyncio.to_thread(
             self._reranker.predict,
             pairs,
             batch_size=min(len(pairs), self._settings.embedding_batch_size),
             show_progress_bar=False,
         )
+        scores = [float(score) for score in raw]
+        if len(scores) != len(candidates):
+            msg = f"reranker returned {len(scores)} scores for {len(candidates)} pairs"
+            raise ValueError(msg)
+        if not all(math.isfinite(score) for score in scores):
+            msg = "reranker returned NaN or infinite scores"
+            raise ValueError(msg)
+        return scores
+
+    async def _rerank(
+        self, query: str, candidates: list[RetrievedChunk], top_n: int
+    ) -> tuple[list[RetrievedChunk], Ranking]:
+        """Keep the best `top_n` by cross-encoder score, falling back to dense order."""
+        try:
+            scores = await self._score_pairs(query, candidates)
+        except Exception:
+            # A broken reranker must not take retrieval down with it: the dense
+            # ranking is a weaker but still relevant, grounded ordering.
+            logger.warning("Cross-encoder failed; ranking by dense similarity", exc_info=True)
+            return sorted(candidates, key=_dense_order)[:top_n], "dense_fallback"
         rescored = [
-            chunk.model_copy(update={"rerank_score": float(score)})
+            chunk.model_copy(update={"rerank_score": score})
             for chunk, score in zip(candidates, scores, strict=True)
         ]
-        rescored.sort(key=lambda chunk: chunk.rerank_score, reverse=True)
-        return rescored[:top_n]
+        rescored.sort(key=_rerank_order)
+        return rescored[:top_n], "cross_encoder"
 
     # ------------------------------- Public -------------------------------- #
     async def retrieve(
@@ -228,13 +321,14 @@ class TwoStageRetriever:
             )
 
         rerank_started = time.perf_counter()
-        reranked = await self._rerank(query, dense_candidates, keep)
+        reranked, ranking = await self._rerank(query, dense_candidates, keep)
         rerank_ms = (time.perf_counter() - rerank_started) * 1000
 
         logger.debug(
-            "Retrieved %d/%d chunks (dense %.1fms, rerank %.1fms)",
+            "Retrieved %d/%d chunks via %s (dense %.1fms, rerank %.1fms)",
             len(reranked),
             len(dense_candidates),
+            ranking,
             dense_ms,
             rerank_ms,
         )
@@ -243,6 +337,7 @@ class TwoStageRetriever:
             candidates_considered=len(dense_candidates),
             dense_ms=dense_ms,
             rerank_ms=rerank_ms,
+            ranking=ranking,
         )
 
     # ------------------------------ Health --------------------------------- #

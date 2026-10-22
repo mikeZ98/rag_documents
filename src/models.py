@@ -17,6 +17,10 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+# How the returned passages were ordered: by the cross-encoder, or — when it
+# fails — by the stage-1 dense similarity (a degraded but still grounded answer).
+Ranking = Literal["cross_encoder", "dense_fallback"]
+
 # Query text: trimmed, non-trivial, and bounded to keep the embedding cost and
 # the prompt-injection surface predictable.
 QueryText = Annotated[
@@ -137,6 +141,7 @@ class SearchResponse(WireModel):
     candidates_considered: int = Field(
         ge=0, description="How many dense candidates the reranker scored."
     )
+    ranking: Ranking = Field(description="`dense_fallback` when the cross-encoder was skipped.")
     retrieval_ms: float = Field(ge=0)
 
 
@@ -146,6 +151,7 @@ class AnswerResponse(WireModel):
     query: str
     answer: str
     sources: list[SourceReference]
+    ranking: Ranking
     usage: TokenUsage
     retrieval_ms: float = Field(ge=0)
     generation_ms: float = Field(ge=0)
@@ -189,6 +195,7 @@ class SourcesEvent(WireModel):
     query: str
     sources: list[SourceReference]
     candidates_considered: int
+    ranking: Ranking
     retrieval_ms: float
     trace_id: str | None = None
 

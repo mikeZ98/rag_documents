@@ -28,8 +28,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from qdrant_client.http import models as rest
 
-from src.models import RetrievedChunk
+from src.models import Ranking, RetrievedChunk
 
 # uuid5 namespace for this project — keeps generated point ids stable across runs.
 POINT_NAMESPACE = uuid.UUID("6f1c2d3e-8a4b-5c6d-9e0f-1a2b3c4d5e6f")
@@ -65,9 +66,36 @@ class PairScorer(Protocol):
     def predict(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
+class CollectionStats(Protocol):
+    """The part of Qdrant's `CollectionInfo` the health probe reads."""
+
+    @property
+    def points_count(self) -> int | None: ...
+
+
+@runtime_checkable
+class VectorStore(Protocol):
+    """The slice of `AsyncQdrantClient` the retriever uses — and all a fake must implement."""
+
+    async def query_points(
+        self,
+        collection_name: str,
+        query: list[float],
+        *,
+        limit: int,
+        with_payload: bool,
+        score_threshold: float | None,
+    ) -> rest.QueryResponse: ...
+
+    async def get_collection(self, collection_name: str) -> CollectionStats: ...
+
+    async def close(self) -> None: ...
+
+
 class RetrieverComponents(StageContract):
     """What a `TwoStageRetriever` is wired with, checked at construction."""
 
+    store: InstanceOf[VectorStore]
     encoder: InstanceOf[TextEncoder]
     reranker: InstanceOf[PairScorer]
 
@@ -160,12 +188,13 @@ class IndexBatch(StageContract):
 # Serving
 # --------------------------------------------------------------------------- #
 class RetrievalResult(StageContract):
-    """Retrieval → generation: reranked passages plus per-stage timings."""
+    """Retrieval → generation: ranked passages plus per-stage timings."""
 
     chunks: tuple[RetrievedChunk, ...]
     candidates_considered: int = Field(ge=0)
     dense_ms: float = Field(ge=0)
     rerank_ms: float = Field(ge=0)
+    ranking: Ranking = "cross_encoder"
 
     @model_validator(mode="after")
     def _ranked_subset_of_candidates(self) -> Self:
@@ -175,9 +204,11 @@ class RetrievalResult(StageContract):
                 f"{self.candidates_considered} candidates"
             )
             raise ValueError(msg)
-        scores = [chunk.rerank_score for chunk in self.chunks]
+        by_dense = self.ranking == "dense_fallback"
+        scores = [chunk.dense_score if by_dense else chunk.rerank_score for chunk in self.chunks]
         if scores != sorted(scores, reverse=True):
-            msg = "chunks must be ordered by descending rerank score (citation [1] = best)"
+            kind = "dense" if by_dense else "rerank"
+            msg = f"chunks must be ordered by descending {kind} score (citation [1] = best)"
             raise ValueError(msg)
         return self
 

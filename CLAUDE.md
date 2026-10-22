@@ -59,8 +59,13 @@ default) or OpenAI.
    `contracts.StageContract`: `extra="forbid"`, `frozen`, `strict`, collections as tuples, foreign
    runtime objects as `InstanceOf[Protocol]`. Put new invariants in the contract's validator, not
    in the consumer. `tests/test_contracts.py` checks every schema's config by reflection.
-9. **The suite is hermetic.** Tests never reach Qdrant, an LLM, HuggingFace or Langfuse —
-   `tests/conftest.py` provides the fakes.
+9. **Retrieval degrades, deterministically.** Transient Qdrant failures (transport, 429, 5xx) get
+   `QDRANT_MAX_RETRIES` linear-backoff retries inside the retrieval deadline; everything else fails
+   fast. A broken reranker yields `ranking="dense_fallback"` (surfaced in every response), never a
+   500. Ties break on (dense score, source, page, chunk index). Malformed payloads are skipped.
+10. **The suite is hermetic.** Tests never reach Qdrant, an LLM, HuggingFace or Langfuse —
+   `tests/conftest.py` provides the fakes; `FakeQdrantClient` implements `contracts.VectorStore`
+   exactly and returns real qdrant-client response models.
 
 ## Environment (Kingston SSD only)
 

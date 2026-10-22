@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     qdrant_collection: str = "rag_documents"
     qdrant_api_key: SecretStr | None = None
     qdrant_timeout_seconds: float = Field(default=10.0, gt=0)
+    # Transient failures only (transport, 429, 5xx); bounded by the retrieval deadline.
+    qdrant_max_retries: int = Field(default=2, ge=0, le=5)
+    qdrant_retry_backoff_seconds: float = Field(default=0.2, ge=0, le=5.0)
 
     # ------------------------------- LLM ----------------------------------- #
     # Both providers speak the OpenAI chat-completions protocol, so the service
