@@ -1,0 +1,14 @@
+#!/bin/sh
+# Re-verify every commit about to leave the machine, including ones replayed by
+# cherry-pick / rebase (which never run pre-commit or commit-msg).
+. "$(dirname "$0")/_attribution.sh"
+remote="$1"
+zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue  # branch deletion: nothing to verify
+  if [ "$remote_sha" = "$zero" ]; then
+    check_revisions "$local_sha" --not --remotes="$remote"
+  else
+    check_revisions "$remote_sha..$local_sha"
+  fi
+done

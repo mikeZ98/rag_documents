@@ -1,0 +1,6 @@
+#!/bin/sh
+# Re-check the identity (`git merge` runs commit-msg but not pre-commit), then reject
+# co-author / AI-attribution metadata in the message.
+. "$(dirname "$0")/_attribution.sh"
+check_identity
+check_message "$1"

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Reject the commit before the editor opens if the author or committer identity is wrong.
+. "$(dirname "$0")/_attribution.sh"
+check_identity

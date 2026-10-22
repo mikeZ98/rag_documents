@@ -1,0 +1,183 @@
+"""The git attribution guard (`.githooks/`) rejects every non-canonical commit.
+
+Each test drives real `git` against a throwaway repository whose global and
+system config are masked, so the developer's own identity cannot leak in.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+from src.config import PROJECT_ROOT
+
+HOOKS_DIR = PROJECT_ROOT / ".githooks"
+AUDIT_SCRIPT = PROJECT_ROOT / "scripts" / "check_attribution.sh"
+CANON_NAME = "mikeZ98"
+CANON_EMAIL = "145975972+mikeZ98@users.noreply.github.com"
+
+pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+
+def _git_env(home: Path) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_"))
+    }
+    env.update(HOME=str(home), GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    return env
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    root = tmp_path / "repo"
+    root.mkdir()
+    env = _git_env(tmp_path)
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.name", CANON_NAME],
+        ["config", "user.email", CANON_EMAIL],
+        ["config", "core.hooksPath", str(HOOKS_DIR)],
+    ):
+        subprocess.run(["git", *args], cwd=root, env=env, check=True)
+    return root
+
+
+def _run(
+    repo: Path, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(args),
+        cwd=repo,
+        env={**_git_env(repo.parent), **(env or {})},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _commit(
+    repo: Path, *messages: str, extra: tuple[str, ...] = (), env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    message_args = [arg for message in messages for arg in ("-m", message)]
+    return _run(repo, "git", "commit", "-q", "--allow-empty", *extra, *message_args, env=env)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "feat: add hybrid retrieval",
+        "docs: document the invariant in CLAUDE.md",
+        "fix: handle the openai SDK timeout",
+    ],
+)
+def test_canonical_identity_and_clean_message_are_accepted(repo: Path, message: str) -> None:
+    result = _commit(repo, message)
+
+    assert result.returncode == 0, result.stderr
+    log = _run(repo, "git", "log", "-1", "--format=%an <%ae>|%cn <%ce>").stdout.strip()
+    assert log == f"{CANON_NAME} <{CANON_EMAIL}>|{CANON_NAME} <{CANON_EMAIL}>"
+
+
+@pytest.mark.parametrize(
+    "trailer",
+    [
+        "Co-Authored-By: Someone <someone@example.com>",
+        "co-authored-by:someone <someone@example.com>",
+        "Generated with an assistant",
+        "🤖 made by a robot",
+        "Assisted-by: a model",
+        "Contact: noreply@anthropic.com",
+        "Drafted in Claude Code",
+    ],
+)
+def test_attribution_metadata_in_message_is_rejected(repo: Path, trailer: str) -> None:
+    result = _commit(repo, "feat: something", trailer)
+
+    assert result.returncode != 0
+    assert "forbidden attribution metadata" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("extra", "env", "expected"),
+    [
+        (("--author=Someone Else <else@example.com>",), None, "AUTHOR name"),
+        ((), {"GIT_AUTHOR_NAME": "Mike"}, "AUTHOR name"),
+        ((), {"GIT_AUTHOR_EMAIL": "m@example.com"}, "AUTHOR email"),
+        ((), {"GIT_COMMITTER_NAME": "Mike"}, "COMMITTER name"),
+        ((), {"GIT_COMMITTER_EMAIL": "m@example.com"}, "COMMITTER email"),
+        # The bare-username noreply form detaches commits from the GitHub profile.
+        ((), {"GIT_AUTHOR_EMAIL": "mikeZ98@users.noreply.github.com"}, "AUTHOR email"),
+    ],
+)
+def test_non_canonical_identity_is_rejected(
+    repo: Path, extra: tuple[str, ...], env: dict[str, str] | None, expected: str
+) -> None:
+    result = _commit(repo, "feat: something", extra=extra, env=env)
+
+    assert result.returncode != 0
+    assert expected in result.stderr
+    assert _run(repo, "git", "rev-parse", "--verify", "-q", "HEAD").returncode != 0
+
+
+def test_verbose_diff_below_scissors_is_not_scanned(repo: Path) -> None:
+    message = repo / "COMMIT_EDITMSG"
+    message.write_text(
+        "feat: guard\n"
+        "# ------------------------ >8 ------------------------\n"
+        "+Co-Authored-By: appears only inside the staged diff\n",
+        encoding="utf-8",
+    )
+
+    result = _run(repo, str(HOOKS_DIR / "commit-msg"), str(message))
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_audit_script_flags_commits_that_bypassed_the_hooks(repo: Path) -> None:
+    assert _commit(repo, "chore: clean root").returncode == 0
+    assert _audit(repo, "HEAD").returncode == 0
+
+    bypass = _commit(
+        repo,
+        "feat: sneaked in",
+        "Co-Authored-By: Someone <someone@example.com>",
+        extra=("--no-verify",),
+    )
+    assert bypass.returncode == 0, bypass.stderr
+
+    result = _audit(repo, "HEAD")
+
+    assert result.returncode != 0
+    assert "forbidden attribution metadata" in result.stderr
+
+
+def test_pre_push_rejects_a_foreign_author(repo: Path) -> None:
+    assert _commit(repo, "chore: base").returncode == 0
+    base = _run(repo, "git", "rev-parse", "HEAD").stdout.strip()
+    foreign = _commit(
+        repo, "feat: foreign", extra=("--no-verify", "--author=Other <other@example.com>")
+    )
+    assert foreign.returncode == 0, foreign.stderr
+    head = _run(repo, "git", "rev-parse", "HEAD").stdout.strip()
+
+    result = subprocess.run(
+        [str(HOOKS_DIR / "pre-push"), "origin", "https://example.invalid/repo.git"],
+        cwd=repo,
+        env=_git_env(repo.parent),
+        input=f"refs/heads/main {head} refs/heads/main {base}\n",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Other <other@example.com>" in result.stderr
+
+
+def _audit(repo: Path, *revisions: str) -> subprocess.CompletedProcess[str]:
+    return _run(repo, "sh", str(AUDIT_SCRIPT), *revisions)
