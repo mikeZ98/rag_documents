@@ -209,11 +209,13 @@ uv run pytest -q              # every command runs against the locked graph
 ```
 
 `uv.lock` is committed and is the source of truth. `requirements.txt` is
-exported from it (`uv export --all-extras --format requirements-txt`) with
+exported from it (`scripts/export_requirements.sh`, which adds the PyTorch CPU index) with
 hashes, for environments that must use plain `pip`:
 
 ```bash
-uv pip sync requirements.txt  # or: pip install --require-hashes -r requirements.txt
+pip install --require-hashes -r requirements.txt && pip install --no-deps -e .
+# uv pip only searches the first index that has a package, so let it compare both:
+uv pip sync --index-strategy unsafe-best-match requirements.txt && uv pip install --no-deps -e .
 ```
 
 ### 3.3 LLM backend

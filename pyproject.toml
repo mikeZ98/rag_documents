@@ -61,6 +61,17 @@ dev = [
 # uv.lock pins the full graph; requirements.txt is exported from it.
 package = true
 
+# Linux (the container image) gets the CPU-only torch build: the default PyPI
+# wheel drags in ~15 CUDA packages and several GB the service never uses.
+# macOS keeps the PyPI wheel, which is the one with Metal (mps) support.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 # --------------------------------------------------------------------------- #
 # Tooling
 # --------------------------------------------------------------------------- #
