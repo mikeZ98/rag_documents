@@ -65,6 +65,7 @@ package = true
 # Tooling
 # --------------------------------------------------------------------------- #
 [tool.ruff]
+cache-dir = ".cache/ruff"
 line-length = 100
 target-version = "py312"
 src = ["src", "tests", "eval"]
@@ -78,6 +79,7 @@ ignore = ["ANN401"]
 "tests/*" = ["ANN201", "ANN001", "ARG001", "ARG002"]
 
 [tool.mypy]
+cache_dir = ".cache/mypy"
 python_version = "3.12"
 strict = true
 warn_unreachable = true
@@ -103,7 +105,9 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+cache_dir = ".cache/pytest"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.coverage.run]
 source = ["src"]
+data_file = ".cache/coverage/.coverage"
