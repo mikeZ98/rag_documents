@@ -94,6 +94,10 @@ The gate — run before **every** commit, all must pass:
 uv run ruff format --check . && uv run ruff check . && uv run mypy && uv run pytest
 ```
 
+CI additionally runs `uv run pytest --cov` (branch coverage, floor 95% in `pyproject.toml`).
+`tests/test_pipeline_local_qdrant.py` runs ingest → retrieve against qdrant-client's in-process
+engine; prefer it over new fakes when a change touches the payload or collection layout.
+
 ## Commit discipline
 
 Conventional Commits (`feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `ci`, `build`), one

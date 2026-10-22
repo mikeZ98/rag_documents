@@ -121,4 +121,11 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.coverage.run]
 source = ["src"]
+branch = true
 data_file = ".cache/coverage/.coverage"
+
+[tool.coverage.report]
+# CI fails below this floor (measured: 98% branch coverage).
+fail_under = 95
+show_missing = true
+skip_covered = true
