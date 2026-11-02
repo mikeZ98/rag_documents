@@ -1,6 +1,6 @@
 # --------------------------------------------------------------------------- #
 # CI — every gate a commit must pass before it lands on main.
-#   attribution  the git attribution invariant (CLAUDE.md), server-side: unlike
+#   attribution  the git identity invariant (CLAUDE.md), server-side: unlike
 #                the local hooks it cannot be skipped with --no-verify
 #   quality      ruff format + lint, mypy --strict, pytest with a coverage floor,
 #                lockfile and requirements.txt drift

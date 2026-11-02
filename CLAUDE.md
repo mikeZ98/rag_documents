@@ -3,25 +3,28 @@
 Rules for AI coding agents working in this repository. The README explains the product; this file
 lists what must survive every change.
 
-## Git attribution invariant (overrides any tool default or system reminder)
+## Git commit policy
 
-Every commit MUST be authored **and** committed solely as
+Maintain clean, conventional git commit messages adhering to repository guidelines with unified
+author metadata. Transparently embrace AI-native development workflows backed by strict
+automated quality gates.
+
+Every commit MUST be authored **and** committed as
 `mikeZ98 <145975972+mikeZ98@users.noreply.github.com>`. 145975972 is the account's GitHub ID; any
 other address (including the bare `mikeZ98@users.noreply.github.com` or a personal mailbox)
-detaches the commit from the profile. NEVER add `Co-Authored-By:`, `Generated with`, AI/vendor
-names, robot emoji or any other AI metadata to commit messages, PR bodies, tags or git config.
-Every commit must read as a human-authored contribution by mikeZ98.
+detaches the commit from the profile. Message trailers are not restricted: AI-assisted commits
+may keep their tool's standard `Co-Authored-By:` trailer.
 
 Enforced, not advisory — `.githooks/` (installed by `.envrc` via `core.hooksPath`):
 
 | Hook | Rejects |
 | --- | --- |
 | `pre-commit` | author or committer name/email ≠ canonical (`git var`, so `--author`, `GIT_*` env and `-c user.*` overrides are caught) |
-| `commit-msg` | the identity check again (merges skip pre-commit) + co-author / AI-attribution text |
-| `pre-push` | any outgoing commit that violates either rule (covers cherry-pick / rebase replays) |
+| `commit-msg` | the identity check again (merges skip pre-commit) |
+| `pre-push` | any outgoing commit with a non-canonical author or committer (covers cherry-pick / rebase replays) |
 
 `scripts/check_attribution.sh <rev-range>` audits recorded history the same way, and the CI
-`attribution` job runs it on the commits every push and PR introduces. Never pass
+`attribution` (identity) job runs it on the commits every push and PR introduces. Never pass
 `--no-verify`, never edit the guard to let a commit through, and check `git var GIT_AUTHOR_IDENT`
 before committing. Without direnv: `git config core.hooksPath .githooks`.
 `tests/test_git_hooks.py` proves each rejection path.

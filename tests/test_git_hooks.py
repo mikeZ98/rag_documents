@@ -1,4 +1,4 @@
-"""The git attribution guard (`.githooks/`) rejects every non-canonical commit.
+"""The git identity guard (`.githooks/`) rejects every non-canonical commit.
 
 Each test drives real `git` against a throwaway repository whose global and
 system config are masked, so the developer's own identity cannot leak in.
@@ -102,11 +102,12 @@ def test_canonical_identity_and_clean_message_are_accepted(repo: Path, message: 
         "Contact: noreply@anthropic.com",
     ],
 )
-def test_attribution_metadata_in_message_is_rejected(repo: Path, trailer: str) -> None:
+def test_ai_assistance_trailers_are_accepted(repo: Path, trailer: str) -> None:
+    # Only the author/committer identity is enforced; disclosing tool assistance is allowed.
     result = _commit(repo, "feat: something", trailer)
 
-    assert result.returncode != 0
-    assert "forbidden attribution metadata" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert trailer in _run(repo, "git", "log", "-1", "--format=%B").stdout
 
 
 @pytest.mark.parametrize(
@@ -131,36 +132,19 @@ def test_non_canonical_identity_is_rejected(
     assert _run(repo, "git", "rev-parse", "--verify", "-q", "HEAD").returncode != 0
 
 
-def test_verbose_diff_below_scissors_is_not_scanned(repo: Path) -> None:
-    message = repo / "COMMIT_EDITMSG"
-    message.write_text(
-        "feat: guard\n"
-        "# ------------------------ >8 ------------------------\n"
-        "+Co-Authored-By: appears only inside the staged diff\n",
-        encoding="utf-8",
-    )
-
-    result = _run(repo, str(HOOKS_DIR / "commit-msg"), str(message))
-
-    assert result.returncode == 0, result.stderr
-
-
 def test_audit_script_flags_commits_that_bypassed_the_hooks(repo: Path) -> None:
     assert _commit(repo, "chore: clean root").returncode == 0
     assert _audit(repo, "HEAD").returncode == 0
 
     bypass = _commit(
-        repo,
-        "feat: sneaked in",
-        "Co-Authored-By: Someone <someone@example.com>",
-        extra=("--no-verify",),
+        repo, "feat: sneaked in", extra=("--no-verify", "--author=Other <other@example.com>")
     )
     assert bypass.returncode == 0, bypass.stderr
 
     result = _audit(repo, "HEAD")
 
     assert result.returncode != 0
-    assert "forbidden attribution metadata" in result.stderr
+    assert "a-ident 'Other <other@example.com>'" in result.stderr
 
 
 def test_pre_push_rejects_a_foreign_author(repo: Path) -> None:
