@@ -13,7 +13,7 @@ the project directory.
 ```
 FastAPI (async)  ·  Qdrant 1.19  ·  all-MiniLM-L6-v2  ·  BAAI/bge-reranker-base
 Ollama llama3.1:8b  or  gpt-4o-mini (SSE)  ·  vanilla-JS chat UI  ·  Langfuse v4
-Ragas  ·  uv  ·  mypy --strict  ·  107 tests
+Ragas  ·  uv  ·  mypy --strict  ·  233 tests  ·  97.9% branch coverage
 ```
 
 ---
@@ -578,7 +578,7 @@ experiment: run once with `RERANK_TOP_N=3` and once with the reranker bypassed
 ## 8. Tests and quality gates
 
 ```bash
-uv run pytest -q                       # 107 tests, no network, no models, no Qdrant
+uv run pytest -q                       # 233 tests, no network, no models, no Qdrant
 uv run pytest --cov=src --cov-report=term-missing
 uv run mypy                            # strict, including tests and eval
 uv run ruff check . && uv run ruff format --check .
@@ -597,9 +597,10 @@ two-stage retrieval, SSE framing, timeouts, error mapping and tracing.
 | `tests/test_eval.py` | Golden-set loading, Ragas column mapping and NaN handling, JSON/CSV export |
 | `tests/test_ui_assets.py` | Chat client ↔ API contract: bound element ids, handled SSE events, payload fields, escaped markdown, pinned CDN hash |
 
-Line coverage of `src/` is 86% (`src/config.py` 100%, `src/models.py` 98%); the
-uncovered remainder is mostly lifespan/model-loading code that only runs against
-real weights.
+The suite collects 233 test cases from 158 test functions (parametrized cases
+counted separately). Branch coverage of `src/` is 97.9% (CI floor: 95%); the
+uncovered remainder is mostly the ingestion CLI's error exits, encrypted-PDF
+handling and a client-disconnect path during generation.
 
 The provider toggle is covered on both sides: `build_llm_client` is asserted to
 point at `http://localhost:11434/v1` with the dummy key for Ollama and at the
