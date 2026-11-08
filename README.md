@@ -1,5 +1,11 @@
 # rag_documents — asynchronous RAG microservice
 
+[![CI](https://github.com/mikeZ98/rag_documents/actions/workflows/ci.yml/badge.svg)](https://github.com/mikeZ98/rag_documents/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](pyproject.toml)
+[![Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](pyproject.toml)
+[![mypy strict](https://img.shields.io/badge/types-mypy%20strict-blue.svg)](pyproject.toml)
+[![Committer mikeZ98](https://img.shields.io/badge/committer-mikeZ98-lightgrey.svg)](https://github.com/mikeZ98/rag_documents/commits/main)
+
 A production-shaped Retrieval-Augmented Generation service: **two-stage retrieval**
 (dense recall in Qdrant → cross-encoder reranking), **token-level SSE streaming**,
 hard deadlines, sanitised error handling, **Langfuse** tracing, a **Ragas**
