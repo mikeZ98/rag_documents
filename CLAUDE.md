@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # CLAUDE.md — rag_documents
 
 Rules for AI coding agents working in this repository. The README explains the product; this file
